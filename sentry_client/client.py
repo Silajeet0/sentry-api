@@ -47,11 +47,21 @@ class SentryClient:
 
     def chat(self, message: str) -> str:
         self.check_version()
-        self.history.append({"role": "user", "content": message})
+
+        # Build the outgoing payload without touching self.history yet — if
+        # this request fails partway (timeout, 524, connection drop), we
+        # must NOT leave an orphaned, unanswered user turn sitting in
+        # history: the orchestrator is stateless per-request and replays
+        # whatever messages we send it, so a leftover unanswered turn gets
+        # silently bundled into whatever you ask next, producing a reply
+        # that answers two unrelated questions at once. Only commit both
+        # the user message and the reply to self.history together, on
+        # success.
+        outgoing = self.history + [{"role": "user", "content": message}]
 
         resp = self.session.post(
             f"{self.config.base_url}/v1/chat/completions",
-            json={"model": "sentry-orchestrator", "messages": self.history},
+            json={"model": "sentry-orchestrator", "messages": outgoing},
             timeout=600,  # pipeline runs are backgrounded server-side, but
                           # tool-call round-trips inside a single turn can
                           # still take a while
@@ -59,7 +69,7 @@ class SentryClient:
         resp.raise_for_status()
         reply = resp.json()["choices"][0]["message"]["content"]
 
-        self.history.append({"role": "assistant", "content": reply})
+        self.history = outgoing + [{"role": "assistant", "content": reply}]
         return reply
 
     def get_summary(self, conference: str, year: str) -> dict:
@@ -72,6 +82,23 @@ class SentryClient:
         """
         resp = self.session.get(
             f"{self.config.base_url}/v1/summary/{conference}/{year}", timeout=30
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def trigger_summary(self, conference: str, year: str, refresh_cache: bool = False) -> dict:
+        """
+        Starts a summarize job directly, bypassing chat()/the orchestrator
+        LLM entirely. Use this instead of "summarize X in the chat — the
+        underlying job is always fast to *schedule*, but asking the
+        orchestrator to figure that out via chat can itself be slow (cold
+        Ollama model load, multi-step tool reasoning) and 524 before it
+        even gets to the fast part.
+        """
+        resp = self.session.post(
+            f"{self.config.base_url}/v1/tools/summarize/{conference}/{year}",
+            params={"refresh_cache": refresh_cache},
+            timeout=30,
         )
         resp.raise_for_status()
         return resp.json()

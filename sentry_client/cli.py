@@ -39,6 +39,20 @@ def main() -> None:
                 print(f"[error] {e}\n")
             continue
 
+        if user_input.lower().startswith("/summarize "):
+            # e.g. "/summarize ICML 2026" — bypasses chat()/the orchestrator
+            # LLM on purpose, see SentryClient.trigger_summary's docstring.
+            parts = user_input.split()
+            if len(parts) != 3:
+                print("usage: /summarize <CONFERENCE> <YEAR>\n")
+                continue
+            try:
+                result = client.trigger_summary(parts[1], parts[2])
+                print(f"\n{result}\n")
+            except Exception as e:
+                print(f"[error] {e}\n")
+            continue
+
         try:
             reply = client.chat(user_input)
         except Exception as e:
