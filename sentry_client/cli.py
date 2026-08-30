@@ -23,6 +23,22 @@ def main() -> None:
         if user_input.lower() in {"exit", "quit"}:
             break
 
+        if user_input.lower().startswith("/summary "):
+            # e.g. "/summary ICML 2026" — bypasses chat() on purpose, see
+            # SentryClient.get_summary's docstring.
+            parts = user_input.split()
+            if len(parts) != 3:
+                print("usage: /summary <CONFERENCE> <YEAR>\n")
+                continue
+            try:
+                digest = client.get_summary(parts[1], parts[2])
+                print(f"\nSubject: {digest.get('subject', '(none)')}\n")
+                print(digest.get("body", "(no body)"))
+                print()
+            except Exception as e:
+                print(f"[error] {e}\n")
+            continue
+
         try:
             reply = client.chat(user_input)
         except Exception as e:

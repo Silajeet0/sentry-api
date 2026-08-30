@@ -61,3 +61,17 @@ class SentryClient:
 
         self.history.append({"role": "assistant", "content": reply})
         return reply
+
+    def get_summary(self, conference: str, year: str) -> dict:
+        """
+        Fetches an already-generated digest directly, bypassing chat()
+        entirely. Use this instead of asking the orchestrator to "show me
+        the summary" — that routes through another LLM generation pass and
+        can 524 on a large digest (see orchestrator_api.py's
+        /v1/summary/{conference}/{year} for why).
+        """
+        resp = self.session.get(
+            f"{self.config.base_url}/v1/summary/{conference}/{year}", timeout=30
+        )
+        resp.raise_for_status()
+        return resp.json()
