@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentry-client"
+version = "0.1.0"
+description = "Thin client for the SENTRY orchestrator API"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.31",
+]
+
+[project.scripts]
+sentry = "sentry_client.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["sentry_client*"]
