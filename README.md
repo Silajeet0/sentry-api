@@ -133,7 +133,7 @@ You'll go through the same first-time prompts again.
 
 ## 4. A note on the server URL changing
 
-If the Mac is currently running SENTRY behind a Cloudflare **Quick Tunnel**
+The Mac is currently running SENTRY behind a Cloudflare **Quick Tunnel**
 (a URL like `https://random-two-words.trycloudflare.com`, rather than a
 proper custom domain), that URL is only stable as long as the tunnel
 process itself doesn't restart — a Mac reboot, a crash, or a long enough
