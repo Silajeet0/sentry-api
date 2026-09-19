@@ -10,7 +10,7 @@ from typing import Callable, List, Optional
 
 import requests
 
-from sentry_client.config import SentryConfig, load_config
+from sentry_client.config import SentryConfig, load_config, reset_config
 
 _last_seen_commit: Optional[str] = None
 
@@ -21,6 +21,32 @@ class SentryClient:
         self.session = requests.Session()
         self.session.headers["Authorization"] = f"Bearer {self.config.api_key}"
         self.history: List[dict] = []
+
+    def reconnect(self) -> None:
+        """
+        Wipe the saved config (~/.sentry/config.json) and re-run first-time
+        setup so a new server URL / API key can be entered on the spot,
+        without hand-editing or deleting the file yourself.
+
+        This is the fix for "[sentry] couldn't reach https://...
+        NameResolutionError" / "Failed to resolve" errors: those mean the
+        server's Cloudflare *quick* tunnel (trycloudflare.com) has rotated
+        to a new random hostname since this client last saved a working
+        one — quick tunnels have no fixed hostname and a new one is minted
+        every time the tunnel process restarts on the server (crash, Mac
+        reboot/sleep, network blip). The old hostname doesn't just stop
+        responding, it stops resolving in DNS entirely once the tunnel
+        that owned it is gone, which is exactly the
+        NameResolutionError/"Failed to resolve" signature above. See the
+        README's Troubleshooting section for how to fetch the current URL
+        from the server side.
+        """
+        global _last_seen_commit
+        reset_config()
+        self.config = load_config()
+        self.session.headers["Authorization"] = f"Bearer {self.config.api_key}"
+        self.history = []
+        _last_seen_commit = None
 
     def check_version(self, warn: Callable[[str], None] = print) -> None:
         """
@@ -39,6 +65,13 @@ class SentryClient:
             commit = resp.json().get("commit")
         except requests.RequestException as e:
             warn(f"[sentry] couldn't reach {self.config.base_url}: {e}")
+            warn(
+                "[sentry] if this URL used to work, the server's Cloudflare "
+                "quick tunnel has likely rotated to a new hostname (this is "
+                "normal — see the README's Troubleshooting section). Get the "
+                "current URL from someone with terminal access to the Mac, "
+                "then run /reconnect here to update it."
+            )
             return
 
         if _last_seen_commit and commit != _last_seen_commit:

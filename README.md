@@ -1,220 +1,290 @@
-# sentry-api
+# sentry-client
 
-A thin command-line client for the SENTRY orchestrator API. Lets you drive
-SENTRY — trigger extraction runs, check status, generate and read summaries,
-kick off IKDD RPA submissions — from any machine, without SSH access to the
-Mac SENTRY actually runs on.
+A thin HTTP client for the SENTRY orchestrator API. This is what
+teammates use instead of SSH-ing into the Mac and running
+`orchestrator_cli.py` directly — it talks to `orchestrator_api.py` over
+HTTPS (through a Cloudflare Tunnel) and needs no checkout of the SENTRY
+codebase itself.
 
-**Important:** this package contains no pipeline logic of its own. It's an
-HTTP client, nothing more — every extraction, scrape, summarization, and RPA
-submission happens on the server (the Mac), and all resulting data is saved
-there, under `data/final_output/` in the SENTRY repo. Running `sentry` from
-your laptop does not download or store any of that data locally — replies
-are printed to your terminal and nothing else. If you want your own local
-copy of something (e.g. a digest), redirect the output yourself.
+Contains no pipeline/scraper/extractor logic — everything real happens
+server-side and can change daily without this package needing a new
+release.
 
 ---
 
-## 1. First-time setup
-
-### Prerequisites
-- Python 3.9+
-- Either `pipx` (recommended) or a plain virtual environment
-
-### Install
-
-**Recommended — pipx** (isolates the install, but `sentry` still works as a
-normal global command, no activation needed):
+## Install
 
 ```bash
-brew install pipx        # macOS; see pipx docs for other platforms
-pipx install git+https://github.com/Silajeet0/sentry-api.git
+pip install -e /path/to/sentry-client
+# or, from a wheel/sdist once one exists:
+pip install sentry-client
 ```
 
-**Alternative — plain venv:**
+This adds a `sentry` command to your shell.
 
-```bash
-python3 -m venv ~/.sentry-api-venv
-source ~/.sentry-api-venv/bin/activate
-pip install git+https://github.com/Silajeet0/sentry-api.git
-```
-
-If you use the venv route, remember you need to `source
-~/.sentry-api-venv/bin/activate` in every new terminal session before
-`sentry` will be found.
-
-### Initialize
-
-Run it once:
+## First run
 
 ```bash
 sentry
 ```
-
-On first run, since no config exists yet, you'll be prompted:
+On first run you'll be prompted once for your **API key** and the
+**server URL** (a `https://*.trycloudflare.com` link — get this from
+whoever administers the Mac). Both are saved to `~/.sentry/config.json`
+(owner-read/write only) so you won't be asked again.
 
 ```
 First-time setup — this only happens once.
-Enter your SENTRY API key: <paste the key you were given>
-Server URL [https://sentry-api.example.org]: <paste the current tunnel URL>
+Enter your SENTRY API key: ****************
+Server URL [https://sentry-api.example.org]: https://<current>.trycloudflare.com
+Saved to ~/.sentry/config.json
 ```
 
-This gets saved to `~/.sentry/config.json` (permissions locked to
-owner-read/write only) and you won't be asked again — every future `sentry`
-invocation reuses it automatically.
-
-**Where to get your API key and server URL:** ask whoever's running the Mac
-server. The server URL in particular *can change* — see the Quick Tunnel
-note in section 4.
-
----
-
-## 2. Using it
-
-Run `sentry` to start an interactive session:
+## Usage
 
 ```
-❯ sentry
-SENTRY orchestrator — type an instruction, or 'exit' to quit.
-you> is the data for ICLR 2025 available?
+SENTRY orchestrator — type an instruction, '/reconnect' if the server URL has changed, or 'exit' to quit.
+
+you> extract Indian-affiliated authors from ICML 2026
 agent> ...
-you> exit
 ```
 
-Type `exit` or `quit` (or Ctrl-D / Ctrl-C) to leave.
+Plain input is sent to the orchestrator's chat/tool-calling loop
+(`/v1/chat/completions`) — the same thing `orchestrator_cli.py` gives you
+on the server itself. A few things bypass that loop on purpose, because
+routing them through an LLM generation pass is slower and can time out on
+large responses:
 
-### Plain chat
+| Command | What it does |
+|---|---|
+| `/summary <CONFERENCE> <YEAR>` | Fetches an already-generated email digest straight off disk (`GET /v1/summary/...`). Use this instead of asking in chat for "show me the summary" of something large. |
+| `/summarize <CONFERENCE> <YEAR>` | Starts a summarize job directly (`POST /v1/tools/summarize/...`), skipping the orchestrator LLM entirely. Use this instead of "summarize X" in chat if a cold model load or multi-step tool reasoning risks a slow/timed-out response. |
+| `/reconnect` | Clears the saved server URL/API key and re-runs first-time setup. See **Troubleshooting** below — this is the fix for the most common failure mode. |
+| `exit` / `quit` | Quit the REPL. |
 
-Anything you type that isn't one of the slash commands below goes straight
-to the orchestrator as a natural-language instruction — trigger a run,
-check status, ask what's on disk, ask it to initiate RPA, etc. This is the
-general-purpose path and it can do anything the orchestrator's tools
-support.
-
-### Fast commands — use these instead of chat for known, simple actions
-
-Two slash commands bypass the orchestrator's own reasoning entirely and hit
-dedicated fast endpoints instead. Use these whenever you already know
-exactly what you want — they're faster and can't fail the way a chat
-request asking for the same thing sometimes can (see section 5):
-
-```
-you> /summarize ICML 2026        # triggers summarize_indian_authors directly
-you> /summary ICML 2026          # fetches an already-generated digest directly, in full
-```
-
-`/summarize` starts (or re-confirms) a summarization job for that
-conference/year and returns immediately — it doesn't wait for the job to
-finish. `/summary` fetches the actual cached digest content once it's done;
-run it again later if the job was still in progress. Both require exact
-arguments: `/summary <CONFERENCE> <YEAR>`, e.g. `/summary ICML 2026` — the
-conference name must match how it's stored in `data/final_output/` on the
-server (check with a plain-chat status question if unsure).
-
-Everything else (`run_pipeline`, `get_run_status`, `retry_errors`,
-`initiate_form_filler`, `get_rpa_status`, ...) currently only goes through
-plain chat — ask for it in natural language.
-
----
-
-## 3. Re-initializing (key rotation, server URL changes)
-
-If your API key is rotated, or the server URL changes (see section 4 for
-why this can happen), delete the saved config and let it re-prompt:
+You can also reset the saved config before even entering the REPL:
 
 ```bash
-rm ~/.sentry/config.json
-sentry
+sentry --reconnect
 ```
 
-You'll go through the same first-time prompts again.
-
 ---
 
-## 4. A note on the server URL changing
+## Troubleshooting
 
-The Mac is currently running SENTRY behind a Cloudflare **Quick Tunnel**
-(a URL like `https://random-two-words.trycloudflare.com`, rather than a
-proper custom domain), that URL is only stable as long as the tunnel
-process itself doesn't restart — a Mac reboot, a crash, or a long enough
-network outage will hand out a *new* random URL. If your saved config
-suddenly stops connecting, that's the most likely reason. Ask whoever runs
-the server for the current URL, then follow section 3 to re-initialize with
-it. This will eventually go away once/if the server moves to a real,
-stable domain — worth checking with the server operator if this is
-happening often.
+### `[sentry] couldn't reach https://....trycloudflare.com: ... NameResolutionError ... Failed to resolve ...`
 
----
+This is by far the most common failure, and it is **not** a client bug,
+an outage of the SENTRY code itself, or anything wrong with your API
+key. It means the URL this client has saved no longer resolves — either
+because the server's public URL rotated to a new one (covered here), or
+because the tunnel behind the *same* URL silently died without its
+process actually restarting (a "zombie tunnel" — covered in the next
+section; check that one first if `pm2 status` claims the tunnel is
+`online` and the URL genuinely doesn't resolve from anywhere, including
+public DNS like `8.8.8.8`).
 
-## 5. Updating the client to a new version
+**Why this happens:** the Mac exposes `orchestrator_api.py` to the
+internet with a Cloudflare **quick tunnel** (`cloudflared tunnel --url
+http://localhost:8091`, managed by pm2 as the `sentry-tunnel` process —
+see `scripts/ecosystem.config.js` in the main SENTRY repo). Quick
+tunnels are free and require no Cloudflare account, but as a trade-off
+they have **no fixed hostname** — Cloudflare mints a new random
+`*.trycloudflare.com` subdomain every single time the `cloudflared`
+process (re)starts, and the old subdomain stops resolving in DNS
+entirely the moment the process that owned it goes away (not merely
+"connection refused" — the name itself disappears, which is exactly the
+`NameResolutionError` / "Failed to resolve" you're seeing). This is
+normal, expected `trycloudflare.com` behavior, not a misconfiguration.
 
-The server side of SENTRY (the actual pipeline, the orchestrator, the API)
-auto-deploys on every push — you don't need to do anything for that. This
-package (the client you run locally) does **not** auto-update; when a new
-client version is pushed, you need to manually reinstall:
+The tunnel process restarts — and therefore the URL rotates — whenever:
+- the Mac reboots, sleeps for a long stretch, or loses network,
+- `cloudflared` itself crashes, or
+- someone manually restarts the `sentry-tunnel` pm2 process.
+
+pm2 is configured with `autorestart: true` for `sentry-tunnel`, so it
+comes back on its own after a crash — just with a new URL each time.
+Your locally cached `~/.sentry/config.json` has no way of knowing this
+happened, so it keeps trying the dead hostname until you tell it about
+the new one.
+
+**Fix — someone with terminal access to the Mac needs to:**
+
+1. Check that the tunnel (and the API server) are actually running:
+   ```bash
+   pm2 status
+   ```
+   Look for `sentry-api`, `sentry-watcher`, and `sentry-tunnel` all
+   showing `online`. If pm2 itself doesn't respond, or the processes
+   are `stopped`/`errored`, they need to be brought back up first —
+   this is a separate problem from the URL rotating (see "The Mac-side
+   processes are stopped" below) — before there's any new URL to fetch.
+   If `sentry-tunnel` shows `online` but the URL still doesn't resolve
+   from anywhere (see next section for how to check), it's a **zombie
+   tunnel** — jump to that section's fix instead of step 2 below, then
+   come back here.
+
+2. Get the URL for the run that's currently live:
+   ```bash
+   grep -A2 "Your quick Tunnel" ~/.pm2/logs/sentry-tunnel-error.log | tail -3
+   ```
+   `cloudflared` logs everything (including its normal startup banner,
+   not just errors) to stderr, which is why pm2 files it under
+   `-error.log` — that's expected, not a sign anything's wrong. This
+   command greps the **whole file**, not just a recent tail, and takes
+   the *last* banner block — that matters, because:
+   - `pm2 logs sentry-tunnel --lines N --nostream` only looks at the
+     last N lines. Right after a restart, `cloudflared` logs a chunk of
+     connectivity-precheck output *after* the banner, which can easily
+     push the banner itself outside a short `--lines` window — you'll
+     see the precheck's "Environment is healthy" summary but no banner
+     and wrongly conclude nothing printed yet.
+   - a plain `grep -i "trycloudflare.com" ... | tail -1` (no `-A2`, no
+     narrowing to the banner text) can just as easily land on an
+     unrelated `ERR Request failed` line from days earlier that happens
+     to mention the same domain — a failed *request* to an old, dead
+     tunnel matches that grep too, and looks like a URL but isn't
+     necessarily the current one.
+
+   Cross-check against `pm2 describe sentry-tunnel`'s `uptime`/`created
+   at` to make sure the banner you're reading corresponds to the
+   process actually running right now.
+
+3. Send the current URL to whoever hit the error.
+
+**Fix — on the client side**, once you have the current URL:
+
+```
+you> /reconnect
+First-time setup — this only happens once.
+Enter your SENTRY API key: ****************
+Server URL [https://sentry-api.example.org]: https://<current>.trycloudflare.com
+Saved to ~/.sentry/config.json
+```
+
+(Your API key hasn't changed — just re-enter the same one. Only the URL
+needs to be updated, but `/reconnect` re-prompts for both since it can't
+tell which one went stale.)
+
+### `pm2 status` shows `sentry-tunnel` as `online`, but the URL still won't resolve — even from public DNS (`nslookup ... 8.8.8.8`, or a fresh network)
+
+This is a different failure from simple rotation, and worth ruling out
+before assuming your config just needs a newer URL. `pm2`'s `autorestart`
+only fires when a process actually **exits** — it has no idea whether
+`cloudflared`'s tunnel *connection* is still functional. A `cloudflared`
+process can stay alive at the OS level (so pm2 reports it as happily
+`online`, restart count `0`) while its actual session with Cloudflare's
+edge has silently died — after which Cloudflare deprovisions the DNS
+name for that dead session. The result: a hostname that returns
+`NXDOMAIN` from *every* resolver, including public ones like `8.8.8.8`,
+which is your signal that this isn't a caching/local-DNS problem — the
+name genuinely doesn't exist anywhere anymore, while pm2 insists the
+process is fine.
+
+**Confirm it's this, not just a stale local DNS cache, from the client
+machine hitting the error:**
+```bash
+nslookup <the-url-your-client-has>.trycloudflare.com 8.8.8.8
+curl -v https://<the-url-your-client-has>.trycloudflare.com/v1/version
+```
+If a public resolver (`8.8.8.8`) also returns `NXDOMAIN`, and `curl`
+(which bypasses Python/the sentry client entirely) also can't resolve
+it, the hostname is genuinely gone — this isn't your machine's fault
+and flushing your own DNS cache won't help.
+
+**Then, on the Mac, confirm it's a zombie and not just a slow tunnel:**
+check `~/.pm2/logs/sentry-tunnel-error.log` for the last time anything
+was logged for that URL at all (grep the URL itself, not just
+`trycloudflare.com` — the log can be large on a long-running tunnel, so
+look at the *last* matching line's timestamp, not the first). If it
+goes quiet days before you hit the error, and `pm2 describe
+sentry-tunnel` shows it's been up since around then with `restarts: 0`,
+that's the zombie: the process never crashed, so `autorestart` never
+had anything to trigger on.
+
+**Fix:** force a restart manually — waiting won't help, since nothing
+will restart it on its own:
 
 ```bash
-pip uninstall sentry-client -y
-pip cache purge
-pip install --no-cache-dir git+https://github.com/Silajeet0/sentry-api.git
+pm2 restart sentry-tunnel
 ```
+Then wait ~10–15s (cloudflared runs a connectivity precheck before it's
+fully live) and grab the fresh URL the same way as step 2 above —
+grep the whole file for the banner, not a short `--lines` tail:
+```bash
+grep -A2 "Your quick Tunnel" ~/.pm2/logs/sentry-tunnel-error.log | tail -3
+```
+Sanity-check it before handing it over, from *both* sides — the Mac and
+the machine that's actually running `sentry`:
+```bash
+curl -sS https://<the-new-url>/v1/version
+```
+Then `/reconnect` on the client as above.
 
-(If you installed via `pipx`, use `pipx reinstall sentry-client` instead,
-or `pipx uninstall sentry-client` followed by the `pipx install` command
-from section 1.)
+### The Mac-side processes are stopped, or `pm2 status` shows nothing at all
 
-**Use the full uninstall-then-clean-reinstall sequence above, not just
-`pip install --upgrade`.** A plain upgrade from a `git+` URL doesn't
-reliably force pip to pull fresh content, and has been known to silently
-keep an old, empty, or partial install in place without any obvious error.
-The sequence above is the version confirmed to work.
-
-**After reinstalling, verify it actually updated** before assuming it
-worked:
+This means pm2's own daemon didn't come back after whatever took the
+tunnel down (typically a Mac reboot). `pm2 startup` (which installs a
+launchd hook so pm2 itself restarts at boot) is a one-time setup step
+that's easy to have skipped — see `scripts/ecosystem.config.js` in the
+main SENTRY repo. From the repo root on the Mac:
 
 ```bash
-python3 -c "import sentry_client, os; print(os.path.dirname(sentry_client.__file__))"
+pm2 resurrect            # if `pm2 save` was run previously
+# or, if that doesn't bring anything back:
+pm2 start scripts/ecosystem.config.js
+pm2 save
+pm2 startup               # one-time; follow the printed sudo command so
+                           # this survives future reboots
 ```
 
-then check the relevant file for whatever feature you're expecting, e.g.:
+Then continue with step 2 above to grab the freshly printed tunnel URL.
 
-```bash
-grep -n "summarize" <path from above>/cli.py
-```
+### `[sentry] server updated (abc1234 -> def5678) since your last message`
 
-If a new feature you were told about doesn't show up, the reinstall didn't
-actually take — repeat the uninstall/purge/reinstall sequence rather than
-assuming something else is wrong.
+Not an error — informational. The server restarted onto a new commit
+mid-session (the `sentry-watcher` pm2 process does this automatically
+when new code lands on the tracked branch). Your conversation history
+is still intact client-side; this is just a heads-up in case newer code
+changed how your in-progress request behaves.
 
-You'll also see a small in-session nudge if the *server's* code changed
-mid-conversation (a line like `[sentry] server updated (abc123 -> def456)
-since your last message`) — that's about the server, not this package, and
-needs no action from you; it's just informational.
+### `401 Unauthorized` / `Invalid API key`
+
+Your saved key doesn't match anything in the server's `SENTRY_API_KEYS`.
+Keys can be rotated server-side independently of the URL; run
+`/reconnect` and enter the current key (ask the Mac's admin for it if
+you don't have it).
+
+### A request hangs for a long time, or times out
+
+`chat()` uses a 600s client-side timeout because tool-call round-trips
+inside a single turn (a cold Ollama model load, multi-step reasoning)
+can genuinely take a while — this is expected for anything that goes
+through chat. Actual pipeline runs (`run_pipeline`, `retry_errors`,
+`initiate_form_filler`, `summarize_indian_authors`) are backgrounded
+server-side regardless, so ask the orchestrator for status ("how's the
+run going?") rather than waiting on one request.
+
+If you're fetching a large already-generated digest, prefer `/summary`
+over asking in chat — see the table above; routing a large digest
+through the orchestrator's LLM as a synchronous chat turn can exceed
+Cloudflare's proxy read timeout (a 524, not adjustable on quick tunnels)
+well before the 600s client timeout is reached.
 
 ---
 
-## 6. Troubleshooting
+## Config file
 
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `ModuleNotFoundError: No module named 'sentry_client'` right after install | Install didn't actually pick up the package contents (stale git history, empty wheel, or a `pip`/interpreter mismatch) | Run `pip show -f sentry-client` — if the `Files:` list is missing `.py` files under `sentry_client/`, the install is broken; do the full reinstall sequence in section 5. Also confirm `which python3` and `which sentry` point into the *same* environment. |
-| `[error] 524 Server Error` on a plain chat message | Cloudflare's tunnel has a hard ~100–120 second timeout on any single request; a chat request that takes longer than that (large content generation, a cold-started local model) gets cut off — even though the underlying work may still complete on the server | Prefer `/summarize` and `/summary` (section 2) for the two cases this most commonly hits. For anything else, if you hit this a lot, ask the server operator — this is a known limitation being tracked. |
-| A reply seems to answer two unrelated questions at once | Historically caused by a client bug where a failed request left an orphaned, unanswered message in the conversation history, which then got silently bundled into the next question | Fixed in current versions of this client (section 5's reinstall picks up the fix if you're on an old one). If it still happens after reinstalling and verifying via `grep`, it's a new issue — report it. |
-| `sentry` prompts for setup again out of nowhere | `~/.sentry/config.json` got deleted or the file is unreadable/corrupted | Just go through setup again (section 1) — no data is lost elsewhere, this file only ever held your key and server URL. |
-| A summary/`/summary` command says no digest exists yet | The job hasn't finished, or was never started | Run `/summarize <CONFERENCE> <YEAR>` first, wait, then try `/summary` again. |
+`~/.sentry/config.json`:
 
----
+```json
+{
+  "api_key": "...",
+  "base_url": "https://....trycloudflare.com"
+}
+```
 
-## 7. Security notes
-
-- Your API key is stored in plaintext at `~/.sentry/config.json`
-  (`chmod 600` — owner read/write only, but not encrypted). Don't commit
-  this file anywhere, don't paste its contents in chat/Slack/tickets.
-- If you ever suspect your key leaked, tell the server operator so it can
-  be rotated (removed from the server's `SENTRY_API_KEYS`) — then follow
-  section 3 to pick up the new one.
-- This is currently a small, trusted-team tool — there's no per-user rate
-  limiting or granular permission tiering yet. Be considerate about not
-  triggering large/expensive/side-effecting actions (large `run_pipeline`
-  runs, `initiate_form_filler`) casually, since they run for real against
-  real infrastructure and real external forms.
+Deliberately dumb — no keyring/OS-credential-store integration, since
+this is a small internal tool, not a public package with a real threat
+model around local file storage. Delete the file (or run `/reconnect` /
+`sentry --reconnect`) any time the key is rotated or the server URL
+changes.
